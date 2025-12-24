@@ -18,6 +18,27 @@ const KV_NAMESPACE_NAME = process.env.KV_NAMESPACE_NAME || "moemail-kv";
 const CUSTOM_DOMAIN = process.env.CUSTOM_DOMAIN;
 const KV_NAMESPACE_ID = process.env.KV_NAMESPACE_ID;
 
+function convertDotenvToJson(filePath: string) {
+  const content = readFileSync(filePath, "utf8");
+  const result: Record<string, string> = {};
+
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+
+    const idx = trimmed.indexOf("=");
+    if (idx === -1) continue;
+
+    const key = trimmed.slice(0, idx).trim();
+    const value = trimmed.slice(idx + 1).trim();
+    result[key] = value;
+  }
+
+  // 覆盖文件内容
+  writeFileSync(filePath, JSON.stringify(result, null, 2));
+}
+
+
 /**
  * 验证必要的环境变量
  */
@@ -311,7 +332,8 @@ const pushPagesSecret = () => {
 
     // 写入临时文件
     writeFileSync(runtimeEnvFile, runtimeEnvContent);
-
+    convertDotenvToJson(runtimeEnvFile);
+    console.log(" 🔁 Converted .env.runtime to JSON for wrangler");
     // 使用临时文件推送secrets
     execSync(`pnpm dlx wrangler pages secret bulk ${runtimeEnvFile}`, { stdio: "inherit" });
 
