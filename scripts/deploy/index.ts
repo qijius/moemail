@@ -332,6 +332,11 @@ const pushPagesSecret = () => {
 
     // 写入临时文件
     writeFileSync(runtimeEnvFile, runtimeEnvContent);
+    if (!runtimeEnvContent.trim()) {
+      console.log("⚠️ No runtime secrets found, skipping Pages secrets push.");
+      return;
+    }
+
     convertDotenvToJson(runtimeEnvFile);
     console.log(" 🔁 Converted .env.runtime to JSON for wrangler");
     // 使用临时文件推送secrets
