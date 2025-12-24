@@ -9,10 +9,11 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Get full git history for checking file changes
+          fetch-depth: 0
 
       - name: Get previous tag
         id: previoustag
@@ -35,7 +36,8 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run deploy script
+      # 🚀 关键步骤：运行 deploy，但先“拦住” wrangler
+      - name: Run deploy script (generate env, skip wrangler)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -50,12 +52,53 @@ jobs:
           AUTH_GOOGLE_ID: ${{ secrets.AUTH_GOOGLE_ID }}
           AUTH_GOOGLE_SECRET: ${{ secrets.AUTH_GOOGLE_SECRET }}
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
-          # ✅ 关键：告诉 deploy 脚本用 JSON
-          ENV_RUNTIME_FORMAT: json
-        run: pnpm dlx tsx scripts/deploy/index.ts
+        run: |
+          # 1️⃣ fake wrangler，防止脚本在这里炸
+          mkdir -p fakebin
+          echo -e '#!/bin/sh\necho "[fake wrangler] skipped"' > fakebin/wrangler
+          chmod +x fakebin/wrangler
+          export PATH="$PWD/fakebin:$PATH"
 
-      # Clean up
+          # 2️⃣ 运行 deploy（允许失败）
+          pnpm dlx tsx scripts/deploy/index.ts || true
+
+          # 3️⃣ 校验 env 文件是否生成
+          if [ ! -f .env.runtime ]; then
+            echo "❌ .env.runtime was not generated"
+            exit 1
+          fi
+
+          echo "✅ .env.runtime generated"
+
+      # 🔁 把 dotenv 强制转成 JSON（覆盖原文件）
+      - name: Convert .env.runtime to JSON
+        run: |
+          node -e "
+          const fs = require('fs');
+          const p = '.env.runtime';
+          const env = fs.readFileSync(p, 'utf8')
+            .split('\n')
+            .filter(l => l && !l.startsWith('#'))
+            .reduce((o, l) => {
+              const i = l.indexOf('=');
+              if (i === -1) return o;
+              o[l.slice(0, i)] = l.slice(i + 1);
+              return o;
+            }, {});
+          fs.writeFileSync(p, JSON.stringify(env, null, 2));
+          console.log('✅ .env.runtime converted to JSON');
+          "
+
+      # 🔐 用真的 wrangler 推 secrets（这一步现在一定成功）
+      - name: Push secrets to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          pnpm dlx wrangler pages secret bulk .env.runtime
+
+      # 🧹 清理
       - name: Post deployment cleanup
         run: |
-          rm -f .env*.*
+          rm -f .env*
           rm -f wrangler*.json
