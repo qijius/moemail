@@ -50,6 +50,8 @@ jobs:
           AUTH_GOOGLE_ID: ${{ secrets.AUTH_GOOGLE_ID }}
           AUTH_GOOGLE_SECRET: ${{ secrets.AUTH_GOOGLE_SECRET }}
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          # ✅ 关键：告诉 deploy 脚本用 JSON
+          ENV_RUNTIME_FORMAT: json
         run: pnpm dlx tsx scripts/deploy/index.ts
 
       # Clean up
