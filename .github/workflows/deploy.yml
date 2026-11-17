@@ -9,18 +9,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get previous tag
-        id: previoustag
-        if: github.event_name == 'push'
-        run: |
-          echo "tag=$(git describe --tags --abbrev=0 HEAD^)" >> $GITHUB_OUTPUT
-        continue-on-error: true
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v2
@@ -36,69 +26,63 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      # 🚀 关键步骤：运行 deploy，但先“拦住” wrangler
-      - name: Run deploy script (generate env, skip wrangler)
+      - name: Setup wrangler.json from example
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          PROJECT_NAME: ${{ secrets.PROJECT_NAME }}
           DATABASE_NAME: ${{ secrets.DATABASE_NAME }}
           DATABASE_ID: ${{ secrets.DATABASE_ID }}
-          KV_NAMESPACE_NAME: ${{ secrets.KV_NAMESPACE_NAME }}
           KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
-          CUSTOM_DOMAIN: ${{ secrets.CUSTOM_DOMAIN }}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const j = JSON.parse(fs.readFileSync('wrangler.example.json', 'utf8'));
+          j.name = 'moemail';
+          if (j.d1_databases?.[0]) {
+            j.d1_databases[0].database_name = process.env.DATABASE_NAME || 'moemail-db';
+            j.d1_databases[0].database_id = process.env.DATABASE_ID;
+          }
+          if (j.kv_namespaces?.[0]) {
+            j.kv_namespaces[0].id = process.env.KV_NAMESPACE_ID;
+          }
+          fs.writeFileSync('wrangler.json', JSON.stringify(j, null, 2));
+          console.log('✅ wrangler.json ready');
+          NODE
+
+      - name: Write unquoted runtime secrets JSON
+        env:
           AUTH_GITHUB_ID: ${{ secrets.AUTH_GITHUB_ID }}
           AUTH_GITHUB_SECRET: ${{ secrets.AUTH_GITHUB_SECRET }}
-          AUTH_GOOGLE_ID: ${{ secrets.AUTH_GOOGLE_ID }}
-          AUTH_GOOGLE_SECRET: ${{ secrets.AUTH_GOOGLE_SECRET }}
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
         run: |
-          # 1️⃣ fake wrangler，防止脚本在这里炸
-          mkdir -p fakebin
-          echo -e '#!/bin/sh\necho "[fake wrangler] skipped"' > fakebin/wrangler
-          chmod +x fakebin/wrangler
-          export PATH="$PWD/fakebin:$PATH"
-
-          # 2️⃣ 运行 deploy（允许失败）
-          pnpm dlx tsx scripts/deploy/index.ts || true
-
-          # 3️⃣ 校验 env 文件是否生成
-          if [ ! -f .env.runtime ]; then
-            echo "❌ .env.runtime was not generated"
-            exit 1
-          fi
-
-          echo "✅ .env.runtime generated"
-
-      # 🔁 把 dotenv 强制转成 JSON（覆盖原文件）
-      - name: Convert .env.runtime to JSON
-        run: |
-          node -e "
+          node <<'NODE'
           const fs = require('fs');
-          const p = '.env.runtime';
-          const env = fs.readFileSync(p, 'utf8')
-            .split('\n')
-            .filter(l => l && !l.startsWith('#'))
-            .reduce((o, l) => {
-              const i = l.indexOf('=');
-              if (i === -1) return o;
-              o[l.slice(0, i)] = l.slice(i + 1);
-              return o;
-            }, {});
-          fs.writeFileSync(p, JSON.stringify(env, null, 2));
-          console.log('✅ .env.runtime converted to JSON');
-          "
+          const strip = (v) => String(v ?? '').trim().replace(/^["']+|["']+$/g, '');
+          const env = {
+            AUTH_GITHUB_ID: strip(process.env.AUTH_GITHUB_ID),
+            AUTH_GITHUB_SECRET: strip(process.env.AUTH_GITHUB_SECRET),
+            AUTH_SECRET: strip(process.env.AUTH_SECRET),
+            AUTH_TRUST_HOST: 'true',
+            AUTH_URL: 'https://moemail-9l7.pages.dev'
+          };
+          for (const [k, v] of Object.entries(env)) {
+            if (!v) throw new Error('Missing secret: ' + k);
+          }
+          fs.writeFileSync('.env.runtime', JSON.stringify(env, null, 2));
+          console.log('✅ secrets prepared', Object.keys(env).join(','));
+          console.log('AUTH_GITHUB_ID length', env.AUTH_GITHUB_ID.length, 'starts', env.AUTH_GITHUB_ID.slice(0, 4));
+          NODE
 
-      # 🔐 用真的 wrangler 推 secrets（这一步现在一定成功）
       - name: Push secrets to Cloudflare Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          pnpm dlx wrangler pages secret bulk .env.runtime
+        run: pnpm dlx wrangler pages secret bulk .env.runtime --project-name moemail
 
-      # 🧹 清理
-      - name: Post deployment cleanup
-        run: |
-          rm -f .env*
-          rm -f wrangler*.json
+      - name: Build and deploy Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm run deploy:pages
+
+      - name: Cleanup
+        if: always()
+        run: rm -f .env.runtime .env wrangler.json
